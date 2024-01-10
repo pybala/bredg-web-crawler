@@ -1,0 +1,174 @@
+
+main:
+    params: [args]
+    steps:
+    - initialize:
+        assign:
+            - app_name: "be-seo-analysis-crawl"
+            - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+            - dataset: "be_seo_analysis_ds"
+            - raw_bq_table: "crawled_data_raw_tb"
+            - gcs_bucket: "bredg-web-crawl-store"
+            - gcs_root_dir: "crawl_data"
+            - web_urls_list: ${args.web_urls}
+            - batch_max_size: 100
+            - bq_ingest_list: []
+            - urls_errored: []
+            - current_date: ${text.substring(time.format(sys.now()), 0, 10)}
+    - createUrlsDict:
+        call: createUrlsDict_swf
+        args:
+            web_urls: ${web_urls_list}
+        result: urlsDictData
+    - read_web_pages:
+        for:
+            value: domain
+            in: ${urlsDictData.domains_list}
+            steps:
+                - getDomainUrls:
+                    for:
+                        value: web_url
+                        in: ${urlsDictData.urls_map[domain]}
+                        steps:
+                            - makeGetCall:
+                                call: readWebPage_swf
+                                args:
+                                    web_url: ${web_url}
+                                result: webCrawlResp
+                            - formatResponse:
+                                call: formatWebResponse_swf
+                                args:
+                                    domain: ${domain}
+                                    web_url: ${web_url}
+                                    web_response: ${webCrawlResp["response"]}
+                                    current_date: ${web_url}
+                                result: formattedData
+                            - updateResponse:
+                                assign:
+                                    - insert_json: {}
+                                    - insert_json["insertId"]: ${uuid.generate()}
+                                    - insert_json["json"]: ${formattedData}
+                                    - bq_ingest_list: ${list.concat(bq_ingest_list, insert_json)}
+    - insertToBQRawTable:
+        call: streamingInsertToBQ_swf
+        args:
+            project: ${project_id}
+            dataset: ${dataset}
+            table: ${raw_bq_table}
+            rows: ${bq_ingest_list}
+        result: bqInsertResp
+    - final_step:
+        return: ${bqInsertResp}
+
+
+createUrlsDict_swf:
+    params: [web_urls]
+    steps:
+        - assignStep:
+            assign:
+                - domains_list: []
+                - urlMap: {}
+                - returnDict: {}
+        - makeJsonL:
+            for:
+                value: url
+                in: ${web_urls}
+                steps:
+                    - basicCheck:
+                        switch:
+                            - condition: ${text.match_regex(url, "^http") == false}
+                              steps:
+                                - urlFormat:
+                                    assign:
+                                        - url: ${"https://" + url}
+                    - updateVars:
+                        assign:
+                            - url_split: ${text.split(url, "/")}
+                            - domain: ${url_split[2]}
+                    - urlDictInit:
+                        switch:
+                            - condition: ${not(domain in urlMap)}
+                              steps:
+                                - addDomainMap:
+                                    assign:
+                                        - urlMap[domain]: []
+                                        - domains_list: ${list.concat(domains_list, domain)}
+
+                    - updateUrlsMap:
+                        assign:
+                            - urlMap[domain]: ${list.concat(urlMap[domain], url)}
+        - updateReturnDict:
+            assign:
+                - returnDict["domains_list"]: ${domains_list}
+                - returnDict["urls_map"]: ${urlMap}
+        - returnResult:
+            return: ${returnDict}
+
+
+readWebPage_swf:
+    params: [web_url]
+    steps:
+        - assignStep:
+            assign:
+                - return_dict: {}
+        - makeApiCall:
+            try:
+                call: http.get
+                args:
+                    url: ${web_url}
+                result: apiResponse
+            except:
+                as: e
+                steps:
+                    - setFailedState:
+                        assign:
+                            - return_dict: {"status":"failed", "response":"Error making api call"}
+        - setSuccessState:
+            assign:
+                - return_dict: {"status":"success", "response": "${apiResponse}"}
+        - returnResult:
+            return: ${return_dict}
+
+
+formatWebResponse_swf:
+    params: [domain, web_url, web_response, current_date]
+    steps:
+        - format_data:
+            assign:
+                - formatted_resp: {}
+                - formatted_resp["domain"]: "${domain}"
+                - formatted_resp["url"]: "${web_url}"
+                - formatted_resp["response_code"]: "${web_response.code}"
+                - formatted_resp["content_length"]: '${web_response.headers["Content-Length"]}'
+                - formatted_resp["is_html"]: true
+                - formatted_resp["response_body"]: "${web_response.body}"
+                - formatted_resp["response_header"]: "${json.encode_to_string(web_response.headers)}"
+                - formatted_resp["crawled_ts"]: "${sys.now()}"
+        - content_type_check:
+            switch:
+                - condition: ${text.match_regex(web_response.headers["Content-Type"], "text/html") == false}
+                  steps:
+                    - update_is_html:
+                        assign:
+                            - formatted_resp["is_html"]: false
+        - returnResult:
+            return: ${formatted_resp}
+
+
+streamingInsertToBQ_swf:
+    params: [project, dataset, table, rows]
+    steps:
+        - assignStep:
+            assign:
+                - domains_list: []
+        - insertAll:
+            call: googleapis.bigquery.v2.tabledata.insertAll
+            args:
+                projectId: ${project}
+                datasetId: ${dataset}
+                tableId: ${table}
+                body:
+                    rows: ${rows}
+            result: insertAllResult
+        - returnResult:
+            return: ${insertAllResult}
