@@ -17,7 +17,7 @@ Used only Workflow (without CFN) to crawl and store RAW data in to BigQuery for 
 
 Though I have used only WF here for crawling and storing, I would use below architecture for scaling more inputs and crawl responses.
 
-![](./docs/bredg-crawl-orchestration-and-store.png)
+![](./docs/bredg-crawl-orchestration-and-store.jpg)
 
 
 ### Current Flow
