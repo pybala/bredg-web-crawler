@@ -22,6 +22,8 @@ Though I have used only WF here for crawling and storing, I would use below arch
 
 ### Current Flow
 
+WORKFLOW: https://github.com/pybala/bredg-web-crawler/blob/main/src/workflows/web-crawl-store-wf.yml
+
 ![](./docs/workflow-visualization-with-swfs.png)
 
 ![](./docs/workflow-without-cfn.png)
